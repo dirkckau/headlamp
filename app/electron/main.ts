@@ -121,6 +121,7 @@ const args = yargs
   .help().argv;
 const isHeadlessMode = args.headless;
 let disableGPU = args['disable-gpu'];
+disableGPU = true;
 const defaultPort = 4466;
 
 const useExternalServer = process.env.EXTERNAL_SERVER || false;

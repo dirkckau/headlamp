@@ -4,9 +4,11 @@
 
 const webpack = require('webpack');
 const config = require('../config/webpack.config');
+const crypto = require('crypto');
 const fs = require('fs-extra');
 const FileManagerPlugin = require('filemanager-webpack-plugin');
 const envPaths = require('env-paths');
+const os = require('os');
 const path = require('path');
 const resolve = path.resolve;
 const child_process = require('child_process');
@@ -15,6 +17,7 @@ const yargs = require('yargs/yargs');
 const headlampPluginPkg = require('../package.json');
 const PluginManager = require('../plugin-management/plugin-management').PluginManager;
 const { table } = require('table');
+const tar = require('tar');
 
 /**
  * Creates a new plugin folder.
@@ -60,7 +63,7 @@ function create(name, link) {
         .split('$${name}')
         .join(name)
         .split('$${headlamp-plugin-version}')
-        .join(headlampPluginPkg.version)
+        .join(headlampPluginPkg.version),
     );
   }
 
@@ -86,7 +89,7 @@ function create(name, link) {
     });
   } catch (e) {
     console.error(
-      `Problem running npm install inside of "${dstFolder}" abs: "${resolve(dstFolder)}"`
+      `Problem running npm install inside of "${dstFolder}" abs: "${resolve(dstFolder)}"`,
     );
     return 3;
   }
@@ -153,25 +156,32 @@ function compileMessages(err, stats) {
  *
  * @param {string} pluginPackagesPath - can be a package or a folder of packages.
  * @param {string} outputPlugins - folder where the plugins are placed.
+ * @param {boolean} logSteps - whether to print the steps of the extraction (true by default).
  * @returns {0 | 1} Exit code, where 0 is success, 1 is failure.
  */
-function extract(pluginPackagesPath, outputPlugins) {
+function extract(pluginPackagesPath, outputPlugins, logSteps = true) {
   if (!fs.existsSync(pluginPackagesPath)) {
     console.error(`"${pluginPackagesPath}" does not exist. Not extracting.`);
     return 1;
   }
   if (!fs.existsSync(outputPlugins)) {
-    console.log(`"${outputPlugins}" did not exist, making folder.`);
+    if (logSteps) {
+      console.log(`"${outputPlugins}" did not exist, making folder.`);
+    }
     fs.mkdirSync(outputPlugins);
   }
 
   function copyFiles(plugName, inputMainJs, mainjs) {
     if (!fs.existsSync(plugName)) {
-      console.log(`Making output folder "${plugName}".`);
+      if (logSteps) {
+        console.log(`Making output folder "${plugName}".`);
+      }
       fs.mkdirSync(plugName);
     }
 
-    console.log(`Copying "${inputMainJs}" to "${mainjs}".`);
+    if (logSteps) {
+      console.log(`Copying "${inputMainJs}" to "${mainjs}".`);
+    }
     fs.copyFileSync(inputMainJs, mainjs);
   }
 
@@ -226,7 +236,103 @@ function extract(pluginPackagesPath, outputPlugins) {
 
   if (!(extractPackage() || extractFolderOfPackages())) {
     console.error(`"${pluginPackagesPath}" does not contain packages. Not extracting.`);
+    return 1;
   }
+
+  return 0;
+}
+
+/**
+ * Calculate the checksum of a file.
+ *
+ * @param {*} filePath
+ * @returns
+ */
+async function calculateChecksum(filePath) {
+  try {
+    const fileBuffer = await fs.readFile(filePath);
+    const hashSum = crypto.createHash('sha256');
+    hashSum.update(fileBuffer);
+    const hex = hashSum.digest('hex');
+    return hex;
+  } catch (error) {
+    console.error('Error calculating checksum:', error);
+    throw error; // Rethrow the error if you want to handle it further up the call stack
+  }
+}
+
+/**
+ * Creates a tarball of the plugin package. The tarball is placed in the outputFolderPath.
+ * It moves files from:
+ *   packageName/dist/main.js to packageName/main.js
+ *   packageName/package.json to packageName/package.json
+ * And then creates a tarball of the resulting folder.
+ *
+ * @param {string} pluginDir - path to the plugin package.
+ * @param {string} outputDir - folder where the tarball is placed.
+ *
+ * @returns {0 | 1} Exit code, where 0 is success, 1 is failure.
+ */
+async function createArchive(pluginDir, outputDir) {
+  const pluginPath = path.resolve(pluginDir);
+  if (!fs.existsSync(pluginPath)) {
+    console.error(`Error: "${pluginPath}" does not exist. Not creating archive.`);
+    return 1;
+  }
+
+  // Extract name + version from plugin's package.json
+  const packageJsonPath = path.join(pluginPath, 'package.json');
+  let packageJson = '';
+  try {
+    packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  } catch (e) {
+    console.error(`Error: Failed to read package.json from "${pluginPath}". Not creating archive.`);
+    return 1;
+  }
+
+  const sanitizedName = packageJson.name.replace(/@/g, '').replace(/\//g, '-');
+  const tarballName = `${sanitizedName}-${packageJson.version}.tar.gz`;
+
+  const outputFolderPath = path.resolve(outputDir);
+  const tarballPath = path.join(outputFolderPath, tarballName);
+
+  if (!fs.existsSync(outputFolderPath)) {
+    console.log(`"${outputFolderPath}" did not exist, making folder.`);
+    fs.mkdirSync(outputFolderPath, { recursive: true });
+  } else if (fs.existsSync(tarballPath)) {
+    console.error(`Error: Tarball "${tarballPath}" already exists. Not creating archive.`);
+    return 1;
+  }
+
+  // Create temporary folder
+  const tempFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'headlamp-plugin-'));
+  if (extract(pluginPath, tempFolder, false) !== 0) {
+    console.error(
+      `Error: Failed to extract plugin package to "${tempFolder}". Not creating archive.`,
+    );
+    return 1;
+  }
+
+  const folderName = path.basename(pluginPath);
+
+  // Create tarball
+  await tar.c(
+    {
+      gzip: true,
+      file: tarballPath,
+      cwd: tempFolder,
+    },
+    [folderName],
+  );
+
+  // Remove temporary folder
+  fs.rmSync(tempFolder, { recursive: true });
+
+  console.log(`Created tarball: "${tarballPath}".`);
+
+  // Print sha256 checksum for convenience
+  const checksum = await calculateChecksum(tarballPath);
+  console.log(`Tarball checksum (sha256): ${checksum}`);
 
   return 0;
 }
@@ -285,7 +391,7 @@ function start() {
           console.warn(
             '    @kinvolk/headlamp-plugin is out of date. Run the following command to upgrade \n' +
               `    See release notes here: ${url}` +
-              '    npx @kinvolk/headlamp-plugin upgrade'
+              '    npx @kinvolk/headlamp-plugin upgrade',
           );
           return;
         }
@@ -384,7 +490,7 @@ function runScriptOnPackages(packageFolder, scriptName, cmdLine, env) {
       '..',
       '..',
       '..',
-      nodeModulesBinCmd
+      nodeModulesBinCmd,
     );
 
     if (fs.existsSync(nodeModulesBinCmd)) {
@@ -396,8 +502,8 @@ function runScriptOnPackages(packageFolder, scriptName, cmdLine, env) {
     } else {
       console.warn(
         `"${scriptCmd}" not found in "${resolve(nodeModulesBinCmd)}" or "${resolve(
-          upNodeModulesBinCmd
-        )}" or "${resolve(npxBinCmd)}".`
+          upNodeModulesBinCmd,
+        )}" or "${resolve(npxBinCmd)}".`,
       );
     }
 
@@ -443,7 +549,7 @@ function runScriptOnPackages(packageFolder, scriptName, cmdLine, env) {
       };
     });
     const failedErrorFolders = errorFolders.filter(
-      errFolder => errFolder.error !== runOnPackageReturn.success
+      errFolder => errFolder.error !== runOnPackageReturn.success,
     );
 
     if (failedErrorFolders.length === 0) {
@@ -464,14 +570,14 @@ function runScriptOnPackages(packageFolder, scriptName, cmdLine, env) {
     const folderErr = runOnFolderOfPackages(packageFolder);
     if (folderErr.error === runOnPackageReturn.notThere) {
       console.error(
-        `"${resolve(packageFolder)}" does not contain a package or packages. Not ${scriptName}-ing.`
+        `"${resolve(packageFolder)}" does not contain a package or packages. Not ${scriptName}-ing.`,
       );
       return 1; // failed
     } else if (folderErr.error === runOnPackageReturn.issue) {
       console.error(
         `Some in "${resolve(packageFolder)}" failed. Failed folders: ${folderErr.failedFolders.join(
-          ', '
-        )}`
+          ', ',
+        )}`,
       );
       return 1; // failed
     }
@@ -692,7 +798,7 @@ function upgrade(packageFolder, skipPackageUpdates, headlampPluginVersion) {
     const templateFolder = path.resolve(__dirname, '..', 'template');
     const packageJsonPath = path.join('.', 'package.json');
     const templatePackageJson = JSON.parse(
-      fs.readFileSync(path.join(templateFolder, 'package.json'), 'utf8')
+      fs.readFileSync(path.join(templateFolder, 'package.json'), 'utf8'),
     );
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
     let configChanged = false;
@@ -713,8 +819,8 @@ function upgrade(packageFolder, skipPackageUpdates, headlampPluginVersion) {
           configChanged = true;
           console.log(
             `Updated package.json field ${keyName}.${key}: ${JSON.stringify(
-              packageJson[keyName][key]
-            )}`
+              packageJson[keyName][key],
+            )}`,
           );
         }
       });
@@ -870,7 +976,7 @@ function upgrade(packageFolder, skipPackageUpdates, headlampPluginVersion) {
     for (const folder of packageFolders) {
       if (failed) {
         console.error(
-          `Skipping "${folder.name}", because "${failed}" did not upgrade successfully.`
+          `Skipping "${folder.name}", because "${failed}" did not upgrade successfully.`,
         );
         continue;
       }
@@ -951,11 +1057,11 @@ function storybook(packageFolder) {
         stdio: 'inherit',
         cwd: packageFolder,
         encoding: 'utf8',
-      }
+      },
     );
   } catch (e) {
     console.error(
-      `Problem running storybook dev inside of "${packageFolder}" abs: "${resolve(packageFolder)}"`
+      `Problem running storybook dev inside of "${packageFolder}" abs: "${resolve(packageFolder)}"`,
     );
     return 1;
   }
@@ -1001,7 +1107,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = build(argv.package);
-    }
+    },
   )
   .command('start', 'Watch for changes and build plugin.', {}, () => {
     process.exitCode = start();
@@ -1023,7 +1129,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = create(argv.name, argv.link);
-    }
+    },
   )
   .command(
     'extract <pluginPackages> <outputPlugins>',
@@ -1046,7 +1152,38 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = extract(argv.pluginPackages, argv.outputPlugins);
-    }
+    },
+  )
+  .command(
+    'package [pluginPath] [outputDir]',
+    'Creates a tarball of the plugin package in the format Headlamp expects.',
+    yargs => {
+      yargs.positional('pluginPath', {
+        describe:
+          'A folder of a plugin package that have been built with dist/main.js in it.' +
+          ' Defaults to current working directory.',
+        type: 'string',
+      });
+      yargs.positional('outputDir', {
+        describe:
+          'The destination folder in which to create the archive.' +
+          'Creates this folder if it does not exist.',
+        type: 'string',
+      });
+    },
+    async argv => {
+      let pluginPath = argv.pluginPath;
+      if (!pluginPath) {
+        pluginPath = process.cwd();
+      }
+
+      let outputDir = argv.outputDir;
+      if (!outputDir) {
+        outputDir = process.cwd();
+      }
+
+      process.exitCode = await createArchive(pluginPath, outputDir);
+    },
   )
   .command(
     'format [package]',
@@ -1066,7 +1203,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = format(argv.package, argv.check);
-    }
+    },
   )
   .command(
     'lint [package]',
@@ -1087,7 +1224,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = lint(argv.package, argv.fix);
-    }
+    },
   )
   .command(
     'tsc [package]',
@@ -1103,7 +1240,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = tsc(argv.package);
-    }
+    },
   )
   .command(
     'storybook [package]',
@@ -1117,7 +1254,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = storybook(argv.package);
-    }
+    },
   )
   .command(
     'storybook-build [package]',
@@ -1132,7 +1269,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = storybook_build(argv.package);
-    }
+    },
   )
   .command(
     'upgrade [package]',
@@ -1158,7 +1295,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = upgrade(argv.package, argv.skipPackageUpdates, argv.headlampPluginVersion);
-    }
+    },
   )
   .command(
     'test [package]',
@@ -1172,7 +1309,7 @@ yargs(process.argv.slice(2))
     },
     argv => {
       process.exitCode = test(argv.package);
-    }
+    },
   )
   .command(
     'install <URL>',
@@ -1212,7 +1349,7 @@ yargs(process.argv.slice(2))
         console.error(e.message);
         process.exit(1); // Exit with error status
       }
-    }
+    },
   )
   .command(
     'update <pluginName>',
@@ -1252,7 +1389,7 @@ yargs(process.argv.slice(2))
         console.error(e.message);
         process.exit(1); // Exit with error status
       }
-    }
+    },
   )
   .command(
     'uninstall <pluginName>',
@@ -1288,7 +1425,7 @@ yargs(process.argv.slice(2))
         console.error(e.message);
         process.exit(1); // Exit with error status
       }
-    }
+    },
   )
   .command(
     'list',
@@ -1331,7 +1468,7 @@ yargs(process.argv.slice(2))
         console.error(e.message);
         process.exit(1); // Exit with error status
       }
-    }
+    },
   )
   .demandCommand(1, '')
   .strict()
