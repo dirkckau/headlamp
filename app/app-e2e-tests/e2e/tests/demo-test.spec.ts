@@ -1,7 +1,7 @@
 import { test } from '@playwright/test';
 import path from 'path';
 import { _electron, ElectronApplication, Page } from 'playwright';
-import { headlampAppPage } from './demo-test';
+import { HeadlampAppPage } from './demo-test';
 
 const electron = _electron;
 const appPath = path.resolve(__dirname, '../../../electron');
@@ -25,12 +25,17 @@ test.afterAll(async () => {
   await electronApp.close();
 });
 
+test('launch app / authenticate', async () => {
+  const headlampPage = new HeadlampAppPage(page);
+  await headlampPage.authenticate();
+});
+
 test('launch app / check homepage', async () => {
-  const headlampPage = new headlampAppPage(page);
+  const headlampPage = new HeadlampAppPage(page);
   await headlampPage.navHomepage();
 });
 
 test('launch app / check notifications', async () => {
-  const headlampPage = new headlampAppPage(page);
+  const headlampPage = new HeadlampAppPage(page);
   await headlampPage.navNotifactions();
 });
