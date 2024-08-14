@@ -18,14 +18,11 @@ ENV GOPATH=/go \
 
 # Keep go mod download separated so source changes don't trigger install
 COPY ./backend/go.* /headlamp/backend/
-RUN --mount=type=cache,target=/go/pkg/mod \
-    cd ./backend && go mod download
+RUN cd ./backend && go mod download
 
 COPY ./backend /headlamp/backend
 
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    --mount=type=cache,target=/go/pkg/mod \
-    cd ./backend && go build -o ./headlamp-server ./cmd/
+RUN cd ./backend && go build -o ./headlamp-server ./cmd/
 
 FROM --platform=${BUILDPLATFORM} node:18@sha256:d0bbfdbad0bff8253e6159dcbee42141db4fc309365d5b8bcfce46ed71569078 as frontend-build
 
@@ -38,7 +35,8 @@ COPY app/package.json /headlamp/app/package.json
 # Keep npm install separated so source changes don't trigger install
 COPY frontend/package*.json /headlamp/frontend/
 WORKDIR /headlamp
-RUN cd ./frontend && npm install --only=prod
+RUN npm i --save-dev @types/websocket
+RUN cd ./frontend && npm run build
 
 FROM frontend-build as frontend
 COPY ./frontend /headlamp/frontend
