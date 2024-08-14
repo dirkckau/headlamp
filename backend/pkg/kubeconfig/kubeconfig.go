@@ -154,6 +154,7 @@ func (c *Context) ProxyRequest(writer http.ResponseWriter, request *http.Request
 // ClientSetWithToken returns a kubernetes clientset for the context.
 func (c *Context) ClientSetWithToken(token string) (*kubernetes.Clientset, error) {
 	restConf, err := c.RESTConfig()
+	restConf.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
 	if err != nil {
 		return nil, err
 	}
