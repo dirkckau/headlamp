@@ -1001,7 +1001,7 @@ func handleClusterAPI(c *HeadlampConfig, router *mux.Router) {
 			token64index := strings.Index(r.Header.Get("Sec-WebSocket-Protocol"), "base64url.bearer.authorization.k8s.io.")
 			r.Header.Set("Sec-WebSocket-Protocol", r.Header.Get("Sec-WebSocket-Protocol")[:token64index]+string(encodedtoken))
 		} else {
-			clusterName = "disabled"
+			contextKey = "disabled"
 		}
 
 		kContext, err := c.kubeConfigStore.GetContext(contextKey)
