@@ -36,7 +36,7 @@ COPY app/package.json /headlamp/app/package.json
 COPY frontend/package*.json /headlamp/frontend/
 WORKDIR /headlamp
 RUN npm i --save-dev @types/websocket
-RUN cd ./frontend && npm run build
+RUN cd ./frontend && npm install --only=prod
 
 FROM frontend-build as frontend
 COPY ./frontend /headlamp/frontend
