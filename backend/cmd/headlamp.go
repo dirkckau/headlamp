@@ -988,6 +988,21 @@ func handleClusterAPI(c *HeadlampConfig, router *mux.Router) {
 			return
 		}
 
+		//If it is websocket, change the header to service token and sent directly to kubernetes api server
+		if r.Header.Get("Sec-Fetch-Mode") != "cors" {
+			logger.Log(logger.LevelInfo, nil, nil, "Handling Websocket")
+			tokenPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
+			token, err := os.ReadFile(tokenPath)
+			if err != nil {
+				logger.Log(logger.LevelError, nil, err, "Error Obtaining Token")
+			}
+			encodedtoken := "base64url.bearer.authorization.k8s.io." + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(token)
+			token64index := strings.Index(r.Header.Get("Sec-WebSocket-Protocol"), "base64url.bearer.authorization.k8s.io.")
+			r.Header.Set("Sec-WebSocket-Protocol", r.Header.Get("Sec-WebSocket-Protocol")[:token64index]+string(encodedtoken))
+		} else {
+			contextKey = "disabled"
+		}
+		
 		kContext, err := c.kubeConfigStore.GetContext(contextKey)
 		if err != nil {
 			logger.Log(logger.LevelError, map[string]string{"key": contextKey},
