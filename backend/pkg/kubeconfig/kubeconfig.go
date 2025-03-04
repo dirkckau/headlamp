@@ -303,6 +303,7 @@ func (c *Context) SetupProxy() error {
 	proxy := httputil.NewSingleHostReverseProxy(URL)
 
 	restConf, err := c.RESTConfig()
+	restConf.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
 	if err == nil {
 		roundTripper, err := makeTransportFor(restConf)
 		if err == nil {
