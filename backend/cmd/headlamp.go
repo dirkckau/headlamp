@@ -1018,74 +1018,68 @@ func handleClusterHelm(c *HeadlampConfig, router *mux.Router) {
 // It parses the request and creates a proxy request to the cluster.
 // That proxy is saved in the cache with the context key.
 func handleClusterAPI(c *HeadlampConfig, router *mux.Router) {
-	router.PathPrefix("/clusters/{clusterName}/{api:.*}").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		contextKey, err := c.getContextKeyForRequest(r)
-		if err != nil {
-			logger.Log(logger.LevelError, map[string]string{"key": contextKey},
-				err, "failed to get context key")
-			http.NotFound(w, r)
+    router.PathPrefix("/clusters/{clusterName}/{api:.*}").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Determine how to handle the request based on the Sec-Fetch-Mode header
+        if r.Header.Get("Sec-Fetch-Mode") == "cors" {
+            // Disable processing for CORS requests
+            logger.Log(logger.LevelInfo, map[string]string{"path": r.URL.Path}, nil, "CORS request disabled")
+            http.NotFound(w, r)
+            return
+        }
 
-			return
-		}
+        // For non-CORS requests, proceed to handle them based on their context
+        contextKey, err := c.getContextKeyForRequest(r)
+        if err != nil {
+            logger.Log(logger.LevelError, map[string]string{"key": contextKey}, err, "failed to get context key")
+            http.NotFound(w, r)
+            return
+        }
 
-		kContext, err := c.kubeConfigStore.GetContext(contextKey)
-		if err != nil {
-			logger.Log(logger.LevelError, map[string]string{"key": contextKey},
-				err, "failed to get context")
-			http.NotFound(w, r)
+        kContext, err := c.kubeConfigStore.GetContext(contextKey)
+        if err != nil {
+            logger.Log(logger.LevelError, map[string]string{"key": contextKey}, err, "failed to get context")
+            http.NotFound(w, r)
+            return
+        }
 
-			return
-		}
+        // Handle WebSocket or HTTP request based on the Upgrade header
+        if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+            handleWebSocketRequest(w, r, kContext)
+        } else {
+            proxyRequest(w, r, kContext)
+        }
+    })
+}
 
-		if kContext.Error != "" {
-			logger.Log(logger.LevelError, map[string]string{"key": contextKey},
-				errors.New(kContext.Error), "context has error")
-			http.Error(w, kContext.Error, http.StatusBadRequest)
+func handleWebSocketRequest(w http.ResponseWriter, r *http.Request, kContext *kubeconfig.Context) {
+    // Read the service account token and set the Authorization header
+    token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+    if err != nil {
+        logger.Log(logger.LevelError, nil, err, "Failed to read service account token")
+        http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+        return
+    }
 
-			return
-		}
+    r.Header.Set("Authorization", "Bearer "+string(token))
+    proxyRequest(w, r, kContext)
+}
 
-        	// Check if the request is a WebSocket upgrade
-        	if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
-            		// Handle WebSocket specific logic
-            		tokenPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
-            		token, err := os.ReadFile(tokenPath)
-            		if err != nil {
-                		logger.Log(logger.LevelError, nil, err, "Error Obtaining Token")
-                		http.Error(w, "Failed to authenticate request", http.StatusInternalServerError)
-                		return
-            		}
-            		encodedToken := "base64url.bearer.authorization.k8s.io." + base64.StdEncoding.EncodeToString(token)
-            		token64index := strings.Index(r.Header.Get("Sec-WebSocket-Protocol"), "base64url.bearer.authorization.k8s.io.")
-            		r.Header.Set("Sec-WebSocket-Protocol", r.Header.Get("Sec-WebSocket-Protocol")[:token64index]+encodedToken)
-        	}
-		
-		clusterURL, err := url.Parse(kContext.Cluster.Server)
-		if err != nil {
-			logger.Log(logger.LevelError, map[string]string{"ClusterURL": kContext.Cluster.Server},
-				err, "failed to parse cluster URL")
-			http.NotFound(w, r)
+func proxyRequest(w http.ResponseWriter, r *http.Request, kContext *kubeconfig.Context) {
+    clusterURL, err := url.Parse(kContext.Cluster.Server)
+    if err != nil {
+        logger.Log(logger.LevelError, map[string]string{"ClusterURL": kContext.Cluster.Server}, err, "failed to parse cluster URL")
+        http.NotFound(w, r)
+        return
+    }
 
-			return
-		}
+    r.Host = clusterURL.Host
+    r.Header.Set("X-Forwarded-Host", r.Host)
+    r.URL.Host = clusterURL.Host
+    r.URL.Scheme = clusterURL.Scheme
 
-		r.Host = clusterURL.Host
-		r.Header.Set("X-Forwarded-Host", r.Host)
-		r.URL.Host = clusterURL.Host
-		r.URL.Path = mux.Vars(r)["api"]
-		r.URL.Scheme = clusterURL.Scheme
-
-		plugins.HandlePluginReload(c.cache, w)
-
-		err = kContext.ProxyRequest(w, r)
-		if err != nil {
-			logger.Log(logger.LevelError, map[string]string{"key": contextKey},
-				err, "failed to proxy request")
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-
-			return
-		}
-	})
+    proxy := httputil.NewSingleHostReverseProxy(clusterURL)
+    proxy.ServeHTTP(w, r)
+    logger.Log(logger.LevelInfo, nil, nil, "Request proxied successfully")
 }
 
 func (c *HeadlampConfig) handleClusterRequests(router *mux.Router) {
