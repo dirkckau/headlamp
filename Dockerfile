@@ -23,9 +23,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY ./backend /headlamp/backend
 
+# Add debug information before build
+RUN cd ./backend && go env && go list -m all
+
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    cd ./backend && go build -o ./headlamp-server ./cmd/
+    cd ./backend && go build -v -o ./headlamp-server ./cmd/
 
 FROM --platform=${BUILDPLATFORM} node:18@sha256:d0bbfdbad0bff8253e6159dcbee42141db4fc309365d5b8bcfce46ed71569078 as frontend-build
 
