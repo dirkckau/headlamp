@@ -19,7 +19,7 @@ ENV GOPATH=/go \
 # Keep go mod download separated so source changes don't trigger install
 COPY ./backend/go.* /headlamp/backend/
 RUN --mount=type=cache,target=/go/pkg/mod \
-    cd ./backend && go mod download
+    cd ./backend && go mod download && go mod tidy
 
 COPY ./backend /headlamp/backend
 
