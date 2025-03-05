@@ -1045,6 +1045,21 @@ func handleClusterAPI(c *HeadlampConfig, router *mux.Router) {
 			return
 		}
 
+        	// Check if the request is a WebSocket upgrade
+        	if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+            		// Handle WebSocket specific logic
+            		tokenPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            		token, err := os.ReadFile(tokenPath)
+            		if err != nil {
+                		logger.Log(logger.LevelError, nil, err, "Error Obtaining Token")
+                		http.Error(w, "Failed to authenticate request", http.StatusInternalServerError)
+                		return
+            		}
+            		encodedToken := "base64url.bearer.authorization.k8s.io." + base64.StdEncoding.EncodeToString(token)
+            		token64index := strings.Index(r.Header.Get("Sec-WebSocket-Protocol"), "base64url.bearer.authorization.k8s.io.")
+            		r.Header.Set("Sec-WebSocket-Protocol", r.Header.Get("Sec-WebSocket-Protocol")[:token64index]+encodedToken)
+        	}
+		
 		clusterURL, err := url.Parse(kContext.Cluster.Server)
 		if err != nil {
 			logger.Log(logger.LevelError, map[string]string{"ClusterURL": kContext.Cluster.Server},
